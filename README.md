@@ -1,8 +1,12 @@
 # QMK to KLE Generator
-
 Compile QMK layout file into kle code to visualize at http://www.keyboard-layout-editor.com/
 
 This is a port of my previous generator for KMonad (https://github.com/mnesarco/kmonad_dump)
+
+
+# When adding a new .c file
+1. Add the layer names
+
 
 ## From this:
 

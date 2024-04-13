@@ -31,6 +31,7 @@ code_aliases = {
     "RET": "Return",
     "ENTER": "Enter",
     "ENT": "Enter",
+    "ESC": "Esc",
     "MINS": "-",
     "EQL": "=",
     "SPC": "Space",
@@ -44,12 +45,14 @@ code_aliases = {
     "MUTE": "Mute",
     "DOT": ".",
     "GRV": "`",
+    "BRID": "Bright -",
+    "BRIU": "Bright +",
     "LSFT": "Shift",
     "RSFT": "Shift",
     "LCTL": "Ctl",
     "RCTL": "Ctl",
     "LALT": "Alt",
-    "RALT": "Alt Gr",
+    "RALT": "Alt",
     "LGUI": "Meta",
     "RGUI": "Meta",
     "TAB": "Tab",
@@ -61,6 +64,8 @@ code_aliases = {
     "RCBR": "}",
     "SCLN": ";",
     "COMM": ",",
+    "GT": ">",
+    "LT": "<",
     "LABK": "<",
     "RABK": ">",
     "PIPE": "|",
@@ -72,7 +77,7 @@ code_aliases = {
     "QUOT": "'",
     "LEFT": "←",
     "RGHT": "→",
-    "CAPS": "🄰 Caps",
+    "CAPS": "Caps",
     "MNXT": "Next",
     "BSLS": "\\\\",
     "PLUS": "+",
@@ -152,17 +157,26 @@ class Options:
         (?P<row>[0-9]+)
         \s+
         (?P<col>[0-9]+)
-        \s+
-        (?P<data>{.+?})
+        \s*
+        (?P<data>{.+?})?
         [)]''', re.X | re.DOTALL)
 
     def __init__(self, data):
         self.index = dict()
+        self.columns_in_row = dict()
         for m in Options.Pattern.finditer(data):
-            self.index[(int(m.group('row'))-1, int(m.group('col'))-1)] = m.group("data")
+            row = int(m.group('row'))-1
+            col = int(m.group('col'))-1
+            self.columns_in_row[row] = col + 1
+            if m.group("data") is None:
+                continue
+            self.index[(row, col)] = m.group("data")
 
     def __call__(self, row: int, col: int) -> str:
         return self.index.get((row, col), None)
+
+    def __str__(self):
+        return f"{str(self.index)}\n{self.columns_in_row}"
 
 
 # +-------------------------------------------------------------------------+
@@ -244,6 +258,11 @@ class KeyCap:
             lab = ["", "", "", "", "", "", "", "", "", "", "", ""]
             for layer, key in keys.items():
                 if key:
+                    pattern = re.compile(r'MO\((?P<number>\d+)\)')
+                    match = pattern.search(key)
+                    if match:
+                        number = match.group('number')
+                        layer = f"{number}"
                     p = self.layermap.get(layer, None)
                     if p is not None:
                         lab[p] = self.safe_translate(key)
@@ -258,6 +277,10 @@ class KeyCap:
         return f'"{content}"'
 
     def translate(self, key):
+        wrapped = False
+        if re.match('^HYPR.*$', key):
+            key = f"H({self.translate(key[5:-1])})"
+            wrapped = True
         if re.match('^[A-Z]{2}_[A-Z0-9_]+$', key):
             key = key[3:]
         key_t = code_aliases.get(key, None)
@@ -270,7 +293,7 @@ class KeyCap:
             return key.upper()
         if key == 'XX':
             return ''
-        if not re.match('^F[0-9]+$', key) and untranslated:
+        if not re.match('^F[0-9]+$', key) and untranslated and not wrapped:
             return key.lower()
         return key
 
@@ -333,7 +356,7 @@ class HardwareLayout:
             \s*
             label
             \s+
-            (?P<name>[^\s)]+)
+            (?P<name>[^\s]+)
             \s+
             (?P<data>.+?)
             [)]''', re.X | re.DOTALL)
@@ -357,7 +380,7 @@ class HardwareLayout:
 
 class QMKLayer:
 
-    def __init__(self, name: str, data: str):
+    def __init__(self, name: str, data: str, columns_in_row: Dict[int, int]):
         self.name = name if name else 'defsrc'
         # Translate to KMonad syntax for XX and _
         data = re.sub(r'\b_______\b|KC_TRANSPARENT|KC_TRNS', '_', data)
@@ -366,7 +389,26 @@ class QMKLayer:
         data = re.sub(r'//.*?\r?\n', '', data)  # Line comments
         data = re.sub(r'/\*.*?\*/', '', data)  # Block comments
         lines = [line.strip() for line in data.splitlines()]
-        self.rows = [[code for code in re.split(r'\s*,\s*|\s+', line) if code] for line in lines if len(line) > 0]
+        raw_rows = [[code for code in re.split(r'\s*,\s*|\s+', line) if code] for line in lines if len(line) > 0]
+
+        rows = []
+        current = []
+        for key in raw_rows[0]:
+            current_row = len(rows)
+            row_size = columns_in_row[current_row]
+
+            if len(current) == row_size:
+                rows.append(current)
+                current = []
+
+            current.append(key)
+
+        if len(current):
+            rows.append(current)
+
+        self.rows = rows
+
+        
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -388,6 +430,7 @@ class QMKLayer:
 
 class QMKKeymapFile:
 
+    # TODO: update this to not rely on the html
     LayoutSection = re.compile(r'''//\s*<deflayer(\s+(?P<layer>\S+))?>
         \s+
         (?P<data>.+?)
@@ -398,12 +441,13 @@ class QMKKeymapFile:
         self.first = None
         with open(file, 'r') as f:
             text = f.read()
+            self.hardware = HardwareLayout(text)
             for sec in QMKKeymapFile.LayoutSection.finditer(text):
-                layer = QMKLayer(sec.group('layer'), sec.group('data'))
+                layer = QMKLayer(sec.group('layer'), sec.group('data'), self.hardware.options.columns_in_row)
                 self.layers[layer.name] = layer
                 if self.first is None and sec.group('layer'):
                     self.first = sec.group('layer')
-            self.hardware = HardwareLayout(text)
+
             self.name = str(Path(file).absolute())
             if self.hardware.output_params.get("layers", False):
                 self.layout = self.build_by_layers()
@@ -436,7 +480,7 @@ class QMKKeymapFile:
                 out.append("[" + ",".join(row) + "]")
             out.append('[{y:1,d:true}, "<br />"]')
 
-        out.append(f'[{{f:4,w:20,h:3,d:true,y:1,t:"#000000"}},"{self.name}<br /><br />{self.hardware.description}"]')
+        out.append(f'[{{f:4,w:20,h:3,d:true,y:1,t:"#000000"}},"{self.hardware.description}"]')
         return ",\n".join(out)
 
     def build_combined(self) -> str:
@@ -460,7 +504,7 @@ class QMKKeymapFile:
                 else:
                     row.append(self.keycap(*k))
             out.append("[" + ",".join(row) + "]")
-        out.append(f'[{{f:4,w:20,h:3,d:true,t:"#333333",y:1}},"{self.name}<br /><br />{self.hardware.description}"]')
+        out.append(f'[{{f:4,w:20,h:3,d:true,t:"#333333",y:1}},"{self.hardware.description}"]')
         return ",\n".join(out)
 
     def keycap(self, row, col, key, only_layer=None):
