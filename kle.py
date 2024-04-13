@@ -281,6 +281,9 @@ class KeyCap:
         if re.match('^HYPR.*$', key):
             key = f"H({self.translate(key[5:-1])})"
             wrapped = True
+        if re.match('^RALT.*$', key):
+            key = f"ALT({self.translate(key[5:-1])})"
+            wrapped = True
         if re.match('^[A-Z]{2}_[A-Z0-9_]+$', key):
             key = key[3:]
         key_t = code_aliases.get(key, None)
